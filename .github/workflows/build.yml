@@ -28,11 +28,9 @@ jobs:
           mkdir -p project
           unzip -q project.zip -d project
 
-          echo "Project files:"
-          ls -la project/
-
           if [ ! -f project/project.godot ]; then
             echo "ERROR: project.godot not found!"
+            find project -maxdepth 3 -type f | head -50
             exit 1
           fi
 
@@ -42,20 +40,22 @@ jobs:
           mkdir -p ~/.config/godot
 
           if [ -d /root/.local/share/godot/export_templates/4.3.stable ]; then
-            cp -r /root/.local/share/godot/export_templates/4.3.stable \
+            cp -rn /root/.local/share/godot/export_templates/4.3.stable \
               ~/.local/share/godot/export_templates/
           fi
 
-          keytool -genkeypair \
-            -v \
-            -keystore /root/debug.keystore \
-            -storepass android \
-            -alias androiddebugkey \
-            -keypass android \
-            -keyalg RSA \
-            -keysize 2048 \
-            -validity 10000 \
-            -dname "CN=Android Debug,O=Android,C=US"
+          if [ ! -f /root/debug.keystore ]; then
+            keytool -genkeypair \
+              -v \
+              -keystore /root/debug.keystore \
+              -storepass android \
+              -alias androiddebugkey \
+              -keypass android \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+          fi
 
           cat > ~/.config/godot/editor_settings-4.3.tres <<'EOF'
           [gd_resource type="EditorSettings" format=3]
