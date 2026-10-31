@@ -23,27 +23,67 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Extract project.zip
+      - name: Extract project
         run: |
           mkdir -p project
           unzip -q project.zip -d project
 
-          if [ ! -f project/project.godot ]; then
-            echo "ERROR: project.godot not found!"
-            find project -maxdepth 3 -type f | head -50
+          test -f project/project.godot || {
+            echo "ERROR: project.godot not found"
+            exit 1
+          }
+
+      - name: Install and configure Android SDK
+        run: |
+          apt-get update
+          apt-get install -y openjdk-17-jdk
+
+          SDKMANAGER=$(find / -type f -name sdkmanager 2>/dev/null | head -1)
+
+          if [ -z "$SDKMANAGER" ]; then
+            echo "ERROR: Android sdkmanager not found"
             exit 1
           fi
 
-      - name: Configure Android export
-        run: |
-          mkdir -p ~/.local/share/godot/export_templates
-          mkdir -p ~/.config/godot
+          SDK_ROOT=$(dirname "$(dirname "$(dirname "$SDKMANAGER")")")
 
-          if [ -d /root/.local/share/godot/export_templates/4.3.stable ]; then
-            cp -rn /root/.local/share/godot/export_templates/4.3.stable \
-              ~/.local/share/godot/export_templates/
+          if [ ! -d "$SDK_ROOT/platform-tools" ]; then
+            SDK_ROOT=$(dirname "$(dirname "$(find / -type f -name adb 2>/dev/null | head -1)")")
           fi
 
+          export ANDROID_HOME="$SDK_ROOT"
+          export ANDROID_SDK_ROOT="$SDK_ROOT"
+
+          echo "Android SDK: $SDK_ROOT"
+
+          yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses || true
+
+          "$SDKMANAGER" --sdk_root="$SDK_ROOT" \
+            "platform-tools" \
+            "platforms;android-33" \
+            "build-tools;33.0.2"
+
+          JAVA_HOME=$(dirname "$(dirname "$(readlink -f "$(which javac)")")")
+
+          echo "JAVA_HOME=$JAVA_HOME" >> "$GITHUB_ENV"
+          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+
+          mkdir -p ~/.config/godot
+
+          cat > ~/.config/godot/editor_settings-4.3.tres <<EOF
+          [gd_resource type="EditorSettings" format=3]
+
+          [resource]
+          export/android/android_sdk_path = "$SDK_ROOT"
+          export/android/java_sdk_path = "$JAVA_HOME"
+          export/android/debug_keystore = "/root/debug.keystore"
+          export/android/debug_keystore_user = "androiddebugkey"
+          export/android/debug_keystore_pass = "android"
+          EOF
+
+      - name: Configure debug keystore
+        run: |
           if [ ! -f /root/debug.keystore ]; then
             keytool -genkeypair \
               -v \
@@ -57,22 +97,11 @@ jobs:
               -dname "CN=Android Debug,O=Android,C=US"
           fi
 
-          cat > ~/.config/godot/editor_settings-4.3.tres <<'EOF'
-          [gd_resource type="EditorSettings" format=3]
-
-          [resource]
-          export/android/android_sdk_path = "/usr/lib/android-sdk"
-          export/android/debug_keystore = "/root/debug.keystore"
-          export/android/debug_keystore_user = "androiddebugkey"
-          export/android/debug_keystore_pass = "android"
-          EOF
-
-          cp ~/.config/godot/editor_settings-4.3.tres \
-             ~/.config/godot/editor_settings-4.tres
-
-      - name: Import project resources
+      - name: Import project
         run: |
-          godot --headless --editor --path project --import
+          godot --headless --editor \
+            --path project \
+            --import
 
       - name: Build Android APK
         run: |
@@ -83,7 +112,12 @@ jobs:
             --export-debug "Android" \
             build/maritime-simulator.apk
 
-          test -s build/maritime-simulator.apk
+          if [ ! -s build/maritime-simulator.apk ]; then
+            echo "ERROR: APK was not generated"
+            exit 1
+          fi
+
+          echo "APK successfully generated!"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
