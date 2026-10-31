@@ -13,93 +13,121 @@ permissions:
 
 jobs:
   build:
-    name: Build Maritime Simulator APK
+    name: Build Maritime Simulator
     runs-on: ubuntu-latest
-
-    container:
-      image: barichello/godot-ci:4.3
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Extract project
+      - name: Install Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
         run: |
-          mkdir -p project
-          unzip -q project.zip -d project
+          yes | sdkmanager --licenses || true
 
-          test -f project/project.godot || {
-            echo "ERROR: project.godot not found"
-            exit 1
-          }
-
-      - name: Install and configure Android SDK
-        run: |
-          apt-get update
-          apt-get install -y openjdk-17-jdk
-
-          SDKMANAGER=$(find / -type f -name sdkmanager 2>/dev/null | head -1)
-
-          if [ -z "$SDKMANAGER" ]; then
-            echo "ERROR: Android sdkmanager not found"
-            exit 1
-          fi
-
-          SDK_ROOT=$(dirname "$(dirname "$(dirname "$SDKMANAGER")")")
-
-          if [ ! -d "$SDK_ROOT/platform-tools" ]; then
-            SDK_ROOT=$(dirname "$(dirname "$(find / -type f -name adb 2>/dev/null | head -1)")")
-          fi
-
-          export ANDROID_HOME="$SDK_ROOT"
-          export ANDROID_SDK_ROOT="$SDK_ROOT"
-
-          echo "Android SDK: $SDK_ROOT"
-
-          yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses || true
-
-          "$SDKMANAGER" --sdk_root="$SDK_ROOT" \
+          sdkmanager \
             "platform-tools" \
             "platforms;android-33" \
             "build-tools;33.0.2"
 
-          JAVA_HOME=$(dirname "$(dirname "$(readlink -f "$(which javac)")")")
+          echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
+          echo "ANDROID_SDK_ROOT=$ANDROID_HOME" >> $GITHUB_ENV
 
-          echo "JAVA_HOME=$JAVA_HOME" >> "$GITHUB_ENV"
-          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
-          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+      - name: Download Godot 4.3
+        run: |
+          mkdir -p "$RUNNER_TEMP/godot"
 
-          mkdir -p ~/.config/godot
+          curl -fL \
+            https://github.com/godotengine/godot/releases/download/4.3-stable/Godot_v4.3-stable_linux.x86_64.zip \
+            -o "$RUNNER_TEMP/godot/godot.zip"
 
-          cat > ~/.config/godot/editor_settings-4.3.tres <<EOF
+          unzip -q "$RUNNER_TEMP/godot/godot.zip" \
+            -d "$RUNNER_TEMP/godot"
+
+          chmod +x "$RUNNER_TEMP/godot/Godot_v4.3-stable_linux.x86_64"
+
+      - name: Install Godot Android export templates
+        run: |
+          mkdir -p "$RUNNER_TEMP/templates"
+
+          curl -fL \
+            https://github.com/godotengine/godot/releases/download/4.3-stable/Godot_v4.3-stable_export_templates.tpz \
+            -o "$RUNNER_TEMP/templates/templates.tpz"
+
+          unzip -q "$RUNNER_TEMP/templates/templates.tpz" \
+            -d "$RUNNER_TEMP/templates"
+
+          TEMPLATE_DIR=$(find "$RUNNER_TEMP/templates" \
+            -type f -name android_debug.apk \
+            -printf '%h\n' | head -1)
+
+          if [ -z "$TEMPLATE_DIR" ]; then
+            echo "ERROR: Android export templates not found"
+            exit 1
+          fi
+
+          DEST="$HOME/.local/share/godot/export_templates/4.3.stable"
+
+          mkdir -p "$DEST"
+          cp -a "$TEMPLATE_DIR/." "$DEST/"
+
+          ls -lh "$DEST"
+
+      - name: Extract project.zip
+        run: |
+          mkdir -p project
+          unzip -q project.zip -d project
+
+          if [ ! -f project/project.godot ]; then
+            echo "ERROR: project.godot missing!"
+            find project -maxdepth 3 -type f
+            exit 1
+          fi
+
+          if [ ! -f project/export_presets.cfg ]; then
+            echo "ERROR: export_presets.cfg missing!"
+            exit 1
+          fi
+
+      - name: Configure Godot Android settings
+        run: |
+          mkdir -p "$HOME/.config/godot"
+
+          keytool -genkeypair \
+            -v \
+            -keystore "$RUNNER_TEMP/debug.keystore" \
+            -storepass android \
+            -alias androiddebugkey \
+            -keypass android \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -dname "CN=Android Debug,O=Android,C=US"
+
+          cat > "$HOME/.config/godot/editor_settings-4.3.tres" <<EOF
           [gd_resource type="EditorSettings" format=3]
 
           [resource]
-          export/android/android_sdk_path = "$SDK_ROOT"
+          export/android/android_sdk_path = "$ANDROID_HOME"
           export/android/java_sdk_path = "$JAVA_HOME"
-          export/android/debug_keystore = "/root/debug.keystore"
+          export/android/debug_keystore = "$RUNNER_TEMP/debug.keystore"
           export/android/debug_keystore_user = "androiddebugkey"
           export/android/debug_keystore_pass = "android"
           EOF
 
-      - name: Configure debug keystore
+      - name: Import project resources
         run: |
-          if [ ! -f /root/debug.keystore ]; then
-            keytool -genkeypair \
-              -v \
-              -keystore /root/debug.keystore \
-              -storepass android \
-              -alias androiddebugkey \
-              -keypass android \
-              -keyalg RSA \
-              -keysize 2048 \
-              -validity 10000 \
-              -dname "CN=Android Debug,O=Android,C=US"
-          fi
-
-      - name: Import project
-        run: |
-          godot --headless --editor \
+          "$RUNNER_TEMP/godot/Godot_v4.3-stable_linux.x86_64" \
+            --headless \
+            --editor \
             --path project \
             --import
 
@@ -107,17 +135,19 @@ jobs:
         run: |
           mkdir -p build
 
-          godot --headless \
+          "$RUNNER_TEMP/godot/Godot_v4.3-stable_linux.x86_64" \
+            --headless \
             --path project \
             --export-debug "Android" \
             build/maritime-simulator.apk
 
           if [ ! -s build/maritime-simulator.apk ]; then
-            echo "ERROR: APK was not generated"
+            echo "ERROR: APK generation failed!"
             exit 1
           fi
 
-          echo "APK successfully generated!"
+          echo "APK BUILD SUCCESSFUL!"
+          ls -lh build/maritime-simulator.apk
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
