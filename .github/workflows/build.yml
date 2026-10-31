@@ -20,15 +20,24 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Check project layout
+      - name: Locate Godot project
         run: |
-          ls -la
-          test -f project.godot || { echo "::error::project.godot is not at the repo root (is it inside a subfolder?)"; exit 1; }
+          echo "--- repo contents ---"
+          find . -maxdepth 3 -not -path './.git/*' | head -60
+          F=$(find . -maxdepth 4 -name project.godot -not -path './.git/*' | head -1)
+          if [ -z "$F" ]; then
+            echo "::error::No project.godot found anywhere in the repo"
+            exit 1
+          fi
+          D=$(dirname "$F")
+          echo "Project directory: $D"
+          echo "PROJECT_DIR=$D" >> "$GITHUB_ENV"
 
       - name: Ensure export_presets.cfg exists
+        working-directory: ${{ env.PROJECT_DIR }}
         run: |
           if [ ! -f export_presets.cfg ]; then
-            echo "export_presets.cfg missing from repo - generating it"
+            echo "export_presets.cfg missing - generating it"
             cat > export_presets.cfg <<'EOF'
           [preset.0]
 
@@ -113,12 +122,14 @@ jobs:
           EOF
 
       - name: Import project resources
+        working-directory: ${{ env.PROJECT_DIR }}
         run: |
           mkdir -p .godot/editor build
           godot --headless --verbose --import 2>&1 | grep -v "is not exposed, skipping" || true
           ls .godot || true
 
       - name: Export debug APK
+        working-directory: ${{ env.PROJECT_DIR }}
         run: |
           godot --headless --verbose --export-debug "Android" build/maritime-simulator.apk 2>&1 | grep -v "is not exposed, skipping" | tail -n 80
           test -s build/maritime-simulator.apk
@@ -127,10 +138,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: maritime-simulator-apk
-          path: build/maritime-simulator.apk
+          path: ${{ env.PROJECT_DIR }}/build/maritime-simulator.apk
 
       - name: Attach APK to GitHub release (tag builds)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: build/maritime-simulator.apk
+          files: ${{ env.PROJECT_DIR }}/build/maritime-simulator.apk
