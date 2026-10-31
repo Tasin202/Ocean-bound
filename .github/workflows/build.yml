@@ -20,11 +20,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Locate Godot project
+      - name: Locate Godot project (unzip if needed)
         run: |
+          if [ -z "$(find . -maxdepth 4 -name project.godot -not -path './.git/*' | head -1)" ]; then
+            Z=$(find . -maxdepth 2 -name '*.zip' -not -path './.git/*' | head -1)
+            if [ -n "$Z" ]; then
+              echo "No project.godot found, unzipping $Z"
+              mkdir -p _project
+              unzip -q -o "$Z" -d _project
+            fi
+          fi
           echo "--- repo contents ---"
           find . -maxdepth 3 -not -path './.git/*' | head -60
-          F=$(find . -maxdepth 4 -name project.godot -not -path './.git/*' | head -1)
+          F=$(find . -maxdepth 5 -name project.godot -not -path './.git/*' | head -1)
           if [ -z "$F" ]; then
             echo "::error::No project.godot found anywhere in the repo"
             exit 1
